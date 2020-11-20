@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+<head>
+	<title>restoreViewport() on Leaflet</title>
+
+	<link rel="stylesheet" type="text/css" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+	<script defer src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+	<script defer src="./map-track-pos.js"></script>
+
+<style>
+* {
+         box-sizing: border-box;
+}
+
+html, body, #map {
+	height: 100%;
+	margin: 0;
+}
+body {
+	display: flex;
+	flex-direction: column;
+}
+#map {
+	width: 100%;
+}
+
+#attn {
+	font-size: 1.2em;
+	line-height: 1.3;
+	padding: .5em;
+}
+h2, h3 {
+	margin: 0;
+}
+</style>
+</head>
+
+<body>
+
+<div id="attn"><h2>Attention on the address line!</h2>
+<ul>
+  <li>You can share current URL with #hashtag to point others to the center of map, preserving current zoom level.</li>
+  <li>But current position anyway saves in cookie for current browser. You may remove coordinates after #hashtag in the address line but position will be recovered from cookie after refresh.<br />
+    <i>(Note: you need to upload this HTML page somewhere to test how position restored from cookie. Cookies doesn't works for single HTML files without real URLs.)</i></li>
+  <li>On <a href="http://leafletjs.com/" target="_blank">Leaflet</a> all done with just one function:
+    <code>restoreViewport(defCenter, defZoom, options)</code>, that replaces standard <code>setView(center, zoom, options)</code>.</li>
+</ul>
+</div>
+<div id="map"></div>
+
+<script>
+// <![CDATA[
+document.addEventListener("DOMContentLoaded", function() {
+
+	var map = new L.Map("map")
+
+		.restoreViewport( // (!) replaces setView()
+	                    [27.88, -82.55], // latLng, default central point. (Tampa Bay, FL, USA in this demo)
+	                    11, // default zoom level
+	                    { // options
+	                        animate: 1,
+				// noHashline: 1, // uncomment (set to true), if you don't want to track current position in the address line.
+	                        cookieName: "map-pos-demo", // set to false, if you don't want cookies.
+	                    })
+
+		.addLayer(new L.TileLayer("http://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "Map data &copy; OpenStreetMap contributors"}));
+});
+// ]]>
+</script>
+
+</body>
+</html>
