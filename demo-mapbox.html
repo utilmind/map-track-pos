@@ -60,7 +60,7 @@ document.addEventListener("DOMContentLoaded", function() {
 			container: "map",
 			style: "mapbox://styles/mapbox/bright-v9",
 
-			// ... is ES6 syntax, but can be easily rewritten to ES5, listing "center", "zoom", "bearing" and "pitch" properties one by one. It's an array returned by mapRestoreViewport() func.
+			// ... it's ES6 syntax, but can be easily rewritten to ES5, listing "center", "zoom", "bearing" and "pitch" properties one by one. It's an array returned by mapRestoreViewport() func.
 			...mapRestoreViewport({
 			            center: [-82.55, 27.88], // lngLat, default central point. (Tampa Bay, FL, USA in this demo)
 			            zoom: 11, // default zoom level
@@ -68,7 +68,7 @@ document.addEventListener("DOMContentLoaded", function() {
 				cookieName,
 				// 1, // noHashline -- set to true if you don't want recover initial point from the #hashtag in the address line.
 			   ),
-		}).on("moveend", () => {
+		}).on("moveend", () => { // BTW, anybody knows why MapBox doesn't supports handlers for multiple events like Leaflet does? I wish to have a possibility to hook both .on("moveend zoomend", ()=>{}).
 			mapTrackViewport(map, cookieName);
 
 		}).on("zoomend", () => {

@@ -69,8 +69,8 @@
                             ? [lat, lng]  // latLng for Leaflet
                             : [lng, lat], // lngLat for MapBox
                         zoom: getCoordVal(2, "z"),
-                        lat,
-                        lng,
+                        lat: lat,
+                        lng: lng,
                     };
 
                     if (!needBounds) { // = !isLeaflet
@@ -90,8 +90,8 @@
 
                 if (isLeaflet) { // LeafletJS
                     rslt = {
-                        center, // L.latLng in Leaflet
-                        zoom,
+                        center: center, // L.latLng in Leaflet
+                        zoom: zoom,
                         lat: center.lat,
                         lng: center.lng,
                     };
@@ -111,7 +111,7 @@
                     var centerArr = center.toArray();
 
                     rslt = {
-                        center, // mapboxgl.LngLat in Mapbox
+                        center: center, // mapboxgl.LngLat in Mapbox
                         zoom: parseFloat(zoom),//.toFixed(2)
                         bearing: parseFloat(map.getBearing()),//.toFixed(2),
                         pitch: parseFloat(map.getPitch()),//.toFixed(2),
