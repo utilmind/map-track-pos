@@ -1,5 +1,3 @@
-"use strict";
-
 (function() {
     var defCookieName = "map-pos",
 
@@ -28,6 +26,10 @@
                (expireStr ? ";expires=" + expireStr : "") +
                ";path=/;samesite=strict" + // Since 14.12.2019 we serving only secure cookies and only on the same site. If you need something different -- write alternative implementation.
                (location.protocol === "https:" ? ";secure" : "");
+        },
+
+        isVisible = function(el) {
+            return 0 < el.offsetWidth; // it's better than jQuery's selector is(":visible"). Invisible elements have 0 offsetWidth and offsetHeight.
         },
 
         getViewportInfo = function(map, // either map, or string argument (hashline)
@@ -142,16 +144,19 @@
         },
 
         trackViewport = function(map, cookieName, noHashline) {
-            var vi = getViewportInfo(map), // return it. Let the Viewport Info to be reused in the MapBox implementation.
-                vis = vi.toString();
+            if (isVisible(map.getContainer())) { // fortunately getContainer() works both for Leaflet and MapBox
 
-            if (!noHashline)
-                history.replaceState(null, null, location.origin + location.pathname + location.search + "#" + vis);
+                var vi = getViewportInfo(map), // return it. Let the Viewport Info to be reused in the MapBox implementation.
+                    vis = vi.toString();
 
-            if (cookieName)
-                setCookie("string" === typeof cookieName ? cookieName : defCookieName, vis);
+                if (!noHashline)
+                    history.replaceState(null, null, location.origin + location.pathname + location.search + "#" + vis);
 
-            return vi;
+                if (cookieName)
+                    setCookie("string" === typeof cookieName ? cookieName : defCookieName, vis);
+
+                return vi;
+            }
         },
 
         restoreViewport = function(defViewport, cookieName, noHashline, isLeaflet) {
@@ -178,10 +183,13 @@
     if ("object" === typeof L) { // if we have Leaflet -- gracefully set up as Leaflet plugin.
         L.Map.include({
 
-            // @public
+            isVisible: function() { // Side method. I want to have it too, for other stuff.
+                return isVisible(this.getContainer());
+            },
+
             getViewportInfo: function(needBounds, // if 1st argument has string type, we're retrieving parameters from the string, instead of map
                                     bounds) { // custom bounds can be used to specify something totally custom, eg straightBounds (without pitch and bearing for the MapBox).
-                return getViewportInfo(this, needBounds, bounds)
+                return getViewportInfo(this, needBounds, bounds);
             },
 
             restoreViewport: function(defCenter, defZoom, options) {
@@ -200,7 +208,7 @@
 
                 if (options) {
                     if (!options.noHashline || options.cookieName) {
-                        map.on("moveend zoomend", function() {
+                        map.on("moveend zoomend", function() { // we checking whether map is currently visible inside...
                             trackViewport(map, options.cookieName, options.noHashline);
                         });
                     }
