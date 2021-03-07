@@ -60,7 +60,8 @@ document.addEventListener("DOMContentLoaded", function() {
 	                    { // options
 	                        animate: 1,
 				// noHashline: 1, // uncomment (set to true), if you don't want to track current position in the address line.
-	                        cookieName: "map-pos-demo", // set to false, if you don't want cookies.
+	                        storageName: "map-pos-demo", // set to false, if you don't want cookies.
+	                        isCenterZoom: false
 	                    })
 
 		.addLayer(new L.TileLayer("http://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "Map data &copy; OpenStreetMap contributors"}));

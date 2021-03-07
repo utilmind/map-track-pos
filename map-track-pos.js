@@ -1,83 +1,181 @@
+// ================
+// ES6
+// import mapboxgl from "mapbox-gl";
+
+// ================
+// ES5
+
 (function() {
-    var defCookieName = "map-pos",
-
-        getCookie = function(name, def) {
-            var i, c, ca = document.cookie.split(";"),
-                nameEQ = name + "=";
-
-            for (i = 0; i < ca.length; ++i) {
-                c = ca[i].replace(/^\s+/, "");
-                if (0 === c.indexOf(nameEQ))
-                    return unescape(c.substr(nameEQ.length));
-            }
-            return def;
-        },
-
-        setCookie = function(name, value, expireSecs) { // to clear cookie set value to "". No value = no cookie.
-            var expireStr = "";
-            if ("" != value) { // value can be boolean false, so don't do exact type comparison
-              var t = new Date();
-              t.setTime(t.getTime() + (expireSecs ? expireSecs * 1000 : 31536000000)); // 1 year if expiration time not specified
-              expireStr = t.toGMTString();
-            }
-
-            document.cookie = name+"="+escape(value) +
-               // cookie without expiration is session cookie
-               (expireStr ? ";expires=" + expireStr : "") +
-               ";path=/;samesite=strict" + // Since 14.12.2019 we serving only secure cookies and only on the same site. If you need something different -- write alternative implementation.
-               (location.protocol === "https:" ? ";secure" : "");
-        },
+    var defStorageName = "map-pos",
+        defIsCenterZoom = true, // FALSE = positioning by NExSW points. TRUE = positioning by central point + zoom level.
+        hashDelimiter = "&", // we preserve everything in hash line after the first occurance of this delimiter. Set it to FALSE to not use it.
 
         isVisible = function(el) {
             return 0 < el.offsetWidth; // it's better than jQuery's selector is(":visible"). Invisible elements have 0 offsetWidth and offsetHeight.
         },
 
-        getViewportInfo = function(map, // either map, or string argument (hashline)
+        updateHash = function(hash, noHashline) {
+            /* AK: commented because there is no real usage for this event.
+                // just dispatchEvent compatible with IE. If you don't need IE -- no need to use it.
+                var ieEvent = function(targetObj,  // window, document, etc
+                                        eventName, // string
+                                        params) {  // any type
+                        var event;
+
+                        if ("function" === typeof Event) { // modern browsers
+                            event = new CustomEvent(eventName, params ? { detail: params } : null);
+                        }else { // IE
+                            event = document.createEvent("CustomEvent");
+                            event.initEvent(eventName, true, true, targetObj);
+                            if (params) event.detail = params;
+                        }
+                        targetObj.dispatchEvent(event);
+                    };
+                ieEvent(window, "map-track-pos", hash);
+            */
+
+            if (hash && !noHashline) {
+                if (hashDelimiter) {
+                    var i, existingHash = location.hash; // remove first # from existing hash
+                    if (existingHash && (-1 !== (i = existingHash.indexOf(hashDelimiter)))) {
+                        hash+= existingHash.substr(i);
+                    }
+                }
+
+                history.replaceState(null, null, location.origin + location.pathname + location.search + "#" + hash);
+            }
+            // WARNING: On 13.02.2021 cursor flicker on replaceState(). Changes to default state for a moment. This is known bug described at https://bugs.chromium.org/p/chromium/issues/detail?id=1128213
+            // StackOverflow discussion: https://stackoverflow.com/questions/35524886/custom-cursor-blinking-when-using-window-history-replacestate
+        },
+
+        // MapBox only! (AK: we have duplicate in "map-export.js")
+        // It's map.getBounds(), when both Bearing and Pitch is 0. This is quite good way to save and restore exact bounding box.
+        getStraightBounds = function(map) {
+            var saveBearing = map.getBearing(),
+                savePitch = map.getPitch(),
+                isTilt = 0 !== saveBearing || 0 !== savePitch,
+                resultBounds;
+
+            if (isTilt) {
+                // AK 28.01.2021: I wish we could cancel bubbling on the "moveend" event! But we can't. :(
+                // So let's cancel handling of the event in their handlers. We'll watch for _busyStraightBounds property.
+                // map.on("moveend", stopPrpagationEvent);
+
+                map._busyStraightBounds = true; // will help us to block odd "moveend"/"zoomend" events
+                map.setBearing(0)
+                    .setPitch(0);
+            }
+            resultBounds = map.getBounds();
+            if (isTilt) {
+                map.setBearing(saveBearing)
+                    .setPitch(savePitch);
+                map._busyStraightBounds = false;
+            }
+
+            return resultBounds;
+        },
+
+        getViewportInfo = function(map, // either map, or string argument (#hashline)
             // if this argument has string type, we're retrieving parameters from the string, instead of map
-                                needBounds, // isLeaflet, in case if map is hashline
-                                bounds) { // custom bounds can be used to specify something totally custom, eg straightBounds (without pitch and bearing for the MapBox).
-            var rslt;
+                                needBounds) { // OR isLeaflet, in case if map (1st argument) is a #hashline.
+                                              // Negative value (-1) returns straightBounds (supported in mapBox only)
+            var rslt, bounds, boundsArr,
+                isRecover = "string" === typeof map;
 
             // getting from input string...
-            if ("string" === typeof map) {
-                var getCoordVal = function(index, expectingLastChar) {
+            if (isRecover) {
+                var isLeaflet = needBounds,
+                    getCoordVal = function(index, expectingLastChar) {
                         var r = 0;
                         return (("undefined" !== typeof map[index]) &&
                                 (expectingLastChar === map[index].charAt(map[index].length-1).toLowerCase()) &&
                                 (r = map[index].slice(0, -1)) &&
                                 !isNaN(r)) ? r : 0;
+                    },
+
+                    // returns fixed lng or FALSE if incorrect format.
+                    isValidLatLng = function(lat, lng) {
+                        // AK 11.08.2020: TODO watch limitRegionBounds and do autoCenterBounds.
+                        if (lat < -86 || lat > 86) { // actually 90, but it's center.
+                            return false; // incorrect coordinates
+                        }
+
+                        if (lng < -180)
+                            lng = lng % 360 + 360;
+                        else if (lng > 180)
+                            lng = lng % 360 - 360;
+
+                        return lng;
                     };
+
+                // remove everything after delimiter first.
+                if (hashDelimiter && (-1 !== (rslt = map.indexOf(hashDelimiter))))
+                    map = map.substr(0, rslt);
 
                 if ((map = map.split(",")) &&
                     (2 < map.length) &&
                     !isNaN(map[0]) &&
-                    !isNaN(map[1])) {
+                    (!isNaN(map[1]) || (rslt = map[1].indexOf("x")))) {
 
-                    var lat = map[0],
-                        lng = map[1];
+                    // it's NE/SW (or NW/SE) coordinates?
+                    if (needBounds = !!rslt) {
+                        rslt = map[1].split("x");
+                        if (isNaN(rslt[0]) || isNaN(rslt[1]) || isNaN(map[2]))
+                            return false; // invalid format
 
-                    // AK 11.08.2020: TODO watch limitRegionBounds and do autoCenterBounds.
-                    if (lat < -86 || lat > 86) { // actually 90, but it's center.
-                        return false; // incorrect coordinates
+                        var latNE = map[0], // don't be confused. It's mapBox-style points. For Leaflet we're using NW/SE.
+                            lngNE = isValidLatLng(latNE, rslt[0]),
+                            latSW = rslt[1],
+                            lngSW = isValidLatLng(latSW, map[2]);
+
+                        if (!lngNE || !lngSW)
+                            return false;  // incorrect lattitude
+
+                        if (isLeaflet) {
+                            rslt = {
+                                bounds: L.latLngBounds([ // latLng for Leaflet (BTW it's actually NW/SE)
+                                            [latNE, lngNE],
+                                            [latSW, lngSW]
+                                        ]),
+                                latNW: latNE,  // attention! NW/SE for Leaflet.
+                                lngNW: lngNE,
+                                latSE: latSW,
+                                lngSE: lngSW
+                            };
+                        }else {
+                            boundsArr = [ // lngLat for MapBox.
+                                          [lngNE, latNE], // new mapboxgl.LngLat(lngNE, latNE)
+                                          [lngSW, latSW] // new mapboxgl.LngLat(lngSW, latSW)
+                                        ];
+                            rslt = { // (we need initialized rslt anyway)
+                                bounds: new mapboxgl.LngLatBounds(boundsArr)
+                            }
+                        }
+
+                    }else {
+                        var lat = map[0],
+                            lng = isValidLatLng(lat, map[1]);
+
+                        if (!lng)
+                            return false; // incorrect lattitude
+
+                        rslt = {
+                            center: isLeaflet
+                                ? [lat, lng]  // latLng for Leaflet
+                                : [lng, lat], // lngLat for MapBox
+                            zoom: getCoordVal(2, "z"),
+                            lat: lat,
+                            lng: lng
+                        };
                     }
 
-                    if (lng < -180)
-                        lng = lng % 360 + 360;
-                    else if (lng > 180)
-                        lng = lng % 360 - 360;
-
-                    rslt = {
-                        center: needBounds // = isLeaflet
-                            ? [lat, lng]  // latLng for Leaflet
-                            : [lng, lat], // lngLat for MapBox
-                        zoom: getCoordVal(2, "z"),
-                        lat: lat,
-                        lng: lng,
-                    };
-
-                    if (!needBounds) { // = !isLeaflet
-                        rslt.bearing = getCoordVal(3, "b");
-                        rslt.pitch = getCoordVal(4, "p");
+                    // finalize restoration. MapBox only. Both centered and 2-point positioning.
+                    if (!isLeaflet) {
+                        rslt.pitch = getCoordVal(
+                            (rslt.bearing = getCoordVal(3, "b")) // b = bearing
+                                ? 4 // if bearing specified, use 4th value.
+                                : 3 // No bearing? Use 3rd.
+                            , "p"); // p = pitch
                     }
                 }else
                     return false; // incorrect format
@@ -85,104 +183,144 @@
             }else { // map must be specified
                 var isLeaflet = "undefined" === typeof map.getPitch,
                 // getting from map... "center" and "zoom" is universal for both Leaflet and MapBox.
-                    center = map.getCenter(),
-                    zoom = map.getZoom();
+                    center = map.getCenter();
 
-                if (needBounds && !bounds) bounds = map.getBounds();
+                rslt = {
+                    zoom: map.getZoom(),
+                    center: center, // L.latLng in Leaflet
+                    lat: center.lat,
+                    lng: center.lng,
+                };
 
-                if (isLeaflet) { // LeafletJS
-                    rslt = {
-                        center: center, // L.latLng in Leaflet
-                        zoom: zoom,
-                        lat: center.lat,
-                        lng: center.lng,
-                    };
-
-                    if (needBounds) {
+                if (needBounds) {
+                    bounds = rslt.bounds = map.getBounds(); // this also works both for Leaflet and MapBox.
+                    if (isLeaflet) {
                         var nw = bounds.getNorthWest(),
                             se = bounds.getSouthEast();
 
-                        rslt.bounds = bounds;
-                        rslt.latNW = nw.lat;
+                        rslt.latNW = nw.lat;  // attention! NW/SE for Leaflet, but NE/SW for MapBox!
                         rslt.lngNW = nw.lng;
                         rslt.latSE = se.lat;
                         rslt.lngSE = se.lng;
                     }
+                }
 
-                }else { // MapBoxGL
-                    var centerArr = center.toArray();
-
-                    rslt = {
-                        center: center, // mapboxgl.LngLat in Mapbox
-                        zoom: parseFloat(zoom),//.toFixed(2)
-                        bearing: parseFloat(map.getBearing()),//.toFixed(2),
-                        pitch: parseFloat(map.getPitch()),//.toFixed(2),
-                        lat: parseFloat(centerArr[1]),//.toFixed(4),
-                        lng: parseFloat(centerArr[0]),//.toFixed(4);
-                    };
-
-                    if (needBounds) {
-                        var boundsArr = bounds.toArray();
-                        rslt.bounds = bounds; // It's almost the same as map.getBounds(), but when Bearing and Pitch is 0. So we can easily restore everything to original state.
-                        rslt.latNW = parseFloat(boundsArr[0][1]);
-                        rslt.lngNW = parseFloat(boundsArr[0][0]);
-                        rslt.latSE = parseFloat(boundsArr[1][1]);
-                        rslt.lngSE = parseFloat(boundsArr[1][0]);
-                    }
+                if (!isLeaflet) {
+                    rslt.bearing = map.getBearing(),
+                    rslt.pitch = map.getPitch();
                 }
             }
 
-            // AK: I don't want to use Object.assign() and still want this code on IE.
-            rslt.toString = function() {
-                var v = this;
-                return v.lat + "," + v.lng + "," + v.zoom + "z" +
-                    (v.bearing ? "," + v.bearing + "b" : "") +
-                    (v.pitch ? "," + v.pitch + "p" : "");
+            if (!isLeaflet && needBounds) { // continue mutation. Mapbox only.
+                if (!isRecover) // when we restoring saved position, we already have boundsArr
+                    boundsArr = bounds.toArray();
+
+                rslt.latNE = boundsArr[0][1]; // swap
+                rslt.lngNE = boundsArr[0][0]; // attention! NW/SE for Leaflet, but NE/SW for MapBox!
+                rslt.latSW = boundsArr[1][1];
+                rslt.lngSW = boundsArr[1][0];
+
+                if (isRecover || 0 > needBounds) { // -1 == need straightBounds too
+                    // get straight bounds or just copy existing values...
+                    if (!isRecover && (0 !== rslt.bearing || 0 !== rslt.pitch)) { // need straightBounds
+                        bounds = getStraightBounds(map);
+                        boundsArr = bounds.toArray();
+                    }
+
+                    rslt.straightBounds = bounds;
+                    rslt.slatNE = boundsArr[0][1];
+                    rslt.slngNE = boundsArr[0][0];
+                    rslt.slatSW = boundsArr[1][1];
+                    rslt.slngSW = boundsArr[1][0];
+                }
+            }
+
+            // AK: I don't want to use Object.assign() and still want this code on IE. So let's simply mutate result object.
+            rslt.toString = function(isCenterZoom) {
+                var v = this,
+                    hasBounds = v.latNE || v.latNW;
+
+                if (v.lat || hasBounds) // if have coordinates to show
+                    return (!hasBounds || (isCenterZoom && v.lat)
+                                  // isCenterZoom:
+                                ? v.lat + "," + v.lng + "," + v.zoom + "z"
+                                  // 2-points:
+                                : ("undefined" === typeof v.slatNE // it's Leaflet or MapBox?
+                                    ? v.latNW + "," + v.lngNW + "x" + v.latSE + "," + v.lngSE // Leaflet use NW x SE
+                                    : v.slatNE + "," + v.slngNE + "x" + v.slatSW + "," + v.slngSW // MapBox use NE x SW
+                                  )) +
+                        (v.bearing ? "," + v.bearing + "b" : "") +
+                        (v.pitch ? "," + v.pitch + "p" : "");
             }
 
             return rslt;
         },
 
-        trackViewport = function(map, cookieName, noHashline) {
-            if (isVisible(map.getContainer())) { // fortunately getContainer() works both for Leaflet and MapBox
+        trackViewport = function(map, isCenterZoom, storageName, noHashline) {
+            if (!map._busyStraightBounds && // if not busy
+                isVisible(map.getContainer())) { // fortunately getContainer() works both for Leaflet and MapBox
 
-                var vi = getViewportInfo(map), // return it. Let the Viewport Info to be reused in the MapBox implementation.
-                    vis = vi.toString();
+                if ("undefined" === typeof isCenterZoom)
+                    isCenterZoom = defIsCenterZoom;
 
-                if (!noHashline)
-                    history.replaceState(null, null, location.origin + location.pathname + location.search + "#" + vis);
+                var vi = getViewportInfo(map, isCenterZoom ? false : -1), // -1 = need straightBounds
+                    vis = vi.toString(isCenterZoom);
 
-                if (cookieName)
-                    setCookie("string" === typeof cookieName ? cookieName : defCookieName, vis);
+                updateHash(vis, noHashline);
 
-                return vi;
+                if ("undefined" === typeof storageName || storageName)
+                    localStorage.setItem("string" === typeof storageName ? storageName : defStorageName, vis);
+
+                return vi; // return viewPortInfo. Let the Viewport Info to be reused in the MapBox implementation.
             }
         },
 
-        restoreViewport = function(defViewport, cookieName, noHashline, isLeaflet) {
+        restoreViewport = function(defViewport, isCenterZoom, storageName, noHashline, isLeaflet) {
             /* Extra OPTIONS (in addition to standard OPTIONS of the setView()):
-                cookieName: (string). Name of cookie to save current map position and restore it on refresh. Any non-string TRUE will use default cookie name, specified by defCookieName variable.
+                storageName: (string). Name of storage item to save current map position and restore it on refresh. Any non-string TRUE will use default storage item name, specified by defStorageName variable.
                 trackHashline: (boolean). If TRUE -- track current map position and zoom level (+ bearning & pitch in MapBox).
             */
             var vi,
                 hashCoords = noHashline ? false : location.hash; // get from the browser address line
 
             // try to recover from the address line
-            if (hashCoords && ("#" === hashCoords.charAt(0)))
-                vi = getViewportInfo(hashCoords.substr(1), isLeaflet);
+            if (hashCoords && ("#" === hashCoords.charAt(0))) {
+                if (vi = getViewportInfo(hashCoords.substr(1), isLeaflet))
+                    vi.restored = "hash";
 
-            // try to recover from cookie
-            if (!vi && cookieName &&
-                (cookieName = getCookie("string" === typeof cookieName ? cookieName : defCookieName)))
-                vi = getViewportInfo(cookieName, isLeaflet);
+            }else if (!vi &&
+                    ("undefined" === typeof storageName || storageName) &&  // try to recover from localStorage
+                    (storageName = localStorage.getItem("string" === typeof storageName ? storageName : defStorageName))) {
+
+                if (vi = getViewportInfo(storageName, isLeaflet))
+                    vi.restored = "storage";
+
+                // restore hashline, if it's used. At least trigger event.
+                if ("undefined" === typeof isCenterZoom)
+                    isCenterZoom = defIsCenterZoom;
+
+                if (vi)
+                    updateHash(vi.toString(isCenterZoom), noHashline);
+            }
 
             return vi || defViewport;
+        },
+
+        latLngToStr = function(latLng) {
+            var lat = "undefined" === typeof latLng.lat ? latLng[0] : latLng.lat,
+                lng = "undefined" === typeof latLng.lng ? latLng[1] : latLng.lng;
+            return Math.abs(lat.toFixed(3)) + "°" + (lat > 0 ? "N" : "S") + " / " +
+                   Math.abs(lng.toFixed(3)) + "°" + (lng > 0 ? "E" : "W");
         };
 
 
     if ("object" === typeof L) { // if we have Leaflet -- gracefully set up as Leaflet plugin.
         L.Map.include({
 
+            // @public variable
+            isViewportRestored: false, // FALSE if viewport did not restored from storage or from hash. Returns either "hash" or "storage" if viewport has been restored.
+
+            // @public functions
             isVisible: function() { // Side method. I want to have it too, for other stuff.
                 return isVisible(this.getContainer());
             },
@@ -192,43 +330,75 @@
                 return getViewportInfo(this, needBounds, bounds);
             },
 
+            // WARNING: list of parameters DIFFERS from MapBox version!
             restoreViewport: function(defCenter, defZoom, options) {
                 // Options are the same as in setView() with following additions:
-                //    cookieName -- custom name of cookie to store current map position. Any TRUE but non-string value will use default cookie name, from "defCookieName" variable.
+                //    storageName -- custom name of storage item to store current map position. Any TRUE but non-string value will use default storage item name, from "defStorageName" variable.
                 //    noHashline -- set to TRUE to not restore/track map position in the hash section of the browser address line.
                 if (!options) options = {};
 
                 var map = this,
-                    vi = restoreViewport(false, options.cookieName, options.noHashline, 1);
+                    isCenterZoom = ("undefined" === typeof options.isCenterZoom ? defIsCenterZoom : options.isCenterZoom),
+                    vi = restoreViewport(false, isCenterZoom, options.storageName, options.noHashline, 1);
 
                 if (vi) {
-                    defCenter = vi.center;
-                    defZoom = vi.zoom;
-                }
+                    map.isViewportRestored = vi.restored;
 
-                if (options) {
-                    if (!options.noHashline || options.cookieName) {
-                        map.on("moveend zoomend", function() { // we checking whether map is currently visible inside...
-                            trackViewport(map, options.cookieName, options.noHashline);
-                        });
+                    if (vi.zoom) { // not specified if !isCenterZoom
+                        defCenter = vi.center;
+                        defZoom = vi.zoom;
                     }
                 }
 
-                return L.Map.prototype.setView.call(map, defCenter, defZoom, options);
+                if (options && (!options.noHashline || options.storageName)) {
+                    map.on("moveend zoomend", function() { // we checking whether map is currently visible inside...
+                        trackViewport(map, isCenterZoom, options.storageName, options.noHashline);
+                    });
+                }
+
+                return vi && vi.bounds
+                    ? map.fitBounds(vi.bounds)
+                    : map.setView(defCenter, defZoom, options); // L.Map.prototype.setView.call()
             },
+
+            latLngToStr: function(latLng) {
+                return latLngToStr(latLng);
+            },
+
         });
 
     }else { // *** MapBox ***
             // if there is no Leaflet (L-object), we consider that it's for the MapBox. Just add following GLOBAL functions...
-            //   1. mapGetViewportInfo() -- get current Viewport information
-            //   2. mapTrackViewport()   -- hook "moveend" and "zoomend", save current position to cookies
-            //   3. mapRecoverViewport() -- recover stored Viewport information from address line OR cookie
+            //   getViewportInfo() -- get current Viewport information.
+            //       * use getViewportInfo().toString() to get the #hash line with coordinates.
+            //   trackViewport()   -- hook "moveend" and "zoomend", save current position to localStorage
+            //   restoreViewport() -- recover stored Viewport information from address line (hash) OR storage
+            //   getStraightBounds() -- get visible viewport of the map (with getBounds()), but ignoring bearing and pitch.
+            //   latLngToStr() -- human readable string with latitude + longitude.
 
-        // publish to global
-        window.mapGetViewportInfo = getViewportInfo; // (map, needBounds, bounds)
-        window.mapTrackViewport   = trackViewport;   // (map, cookieName, noHashline)
-        window.mapRestoreViewport = function(defViewport, cookieName, noHashline) {     // (cookieName, noHasline)
-            return restoreViewport(defViewport, cookieName, noHashline, 0);
+        // alter existing static mapbox object. But scope can be "window" too.
+        var scope = mapboxgl;
+
+        scope.getViewportInfo = getViewportInfo; // (map, needBounds, bounds)
+        scope.trackViewport   = trackViewport;   // (map, isCenterZoom, storageName, noHashline)
+                                                 //       isCenterZoom -- select method how we track coordinates.
+                                                 //                       FALSE = positioning by NExSW points. TRUE = positioning by central point + zoom level.
+        // Get restored information. Returns viewportInfo, either center point + zoom OR ne/sw (bounds). Plus pitch and bearing in both cases.
+        // Position can be applied on
+        scope.restoreViewport = function(defViewport, isCenterZoom, storageName, noHashline) {
+            return restoreViewport(defViewport, isCenterZoom, storageName, noHashline, 0); // 0 = not Leaflet.
         };
+        // apply the viewportInfo (restored with restoreViewport function) into mapboxgl's map object.
+        // Use only if viewport controlled by bounding rectangle! No need to use it if viewport controlled by central point + zoom.
+        scope.applyViewport = function(map, vi) {
+            if (vi.bounds) { // By default MapBox restore only central point + zoom. Let's fit the viewport to bounding rectangle instead.
+                map.fitBounds(vi.bounds, { animate: false });
+                // restore tilt & rotation after bounds anyway. It's straight bounds.
+                if (vi.pitch) map.setPitch(vi.pitch); // it shouldn't be neither 0 nor undefined
+                if (vi.bearing) map.setBearing(vi.bearing); // but negative values are possible
+            }
+        };
+        scope.getStraightBounds = getStraightBounds;
+        scope.latLngToStr = latLngToStr;
     }
 })();

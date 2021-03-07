@@ -54,7 +54,7 @@ document.addEventListener("DOMContentLoaded", function() {
 
 	mapboxgl.accessToken = "pk.eyJ1IjoibXBldHJvZmYiLCJhIjoiT1F0R1hobyJ9.ZMy8qTCk-OxBhAb3BG2iog"; // replace the token if current doesn't works!
 
-	const cookieName = "map-pos-demo",
+	const storageName = "map-pos-demo",
 
 		map = new mapboxgl.Map({
 			container: "map",
@@ -64,16 +64,19 @@ document.addEventListener("DOMContentLoaded", function() {
 			...mapRestoreViewport({
 			            center: [-82.55, 27.88], // lngLat, default central point. (Tampa Bay, FL, USA in this demo)
 			            zoom: 11, // default zoom level
+                                    // bounds: defBounds, // <-- this is an alternative to "center" an "zoom"
 			        },
-				cookieName,
+				storageName,
 				// 1, // noHashline -- set to true if you don't want recover initial point from the #hashtag in the address line.
 			   ),
 		}).on("moveend", () => { // BTW, anybody knows why MapBox doesn't supports handlers for multiple events like Leaflet does? I wish to have a possibility to hook both .on("moveend zoomend", ()=>{}).
-			mapTrackViewport(map, cookieName);
+			mapTrackViewport(map, storageName);
 
 		}).on("zoomend", () => {
-			mapTrackViewport(map, cookieName);
+			mapTrackViewport(map, storageName);
 		});
+
+        // mapboxgl.applyViewport(map, vi); // <-- use it if you restore bound box instead of central point with zoom
 });
 // ]]>
 </script>
