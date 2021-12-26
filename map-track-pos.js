@@ -5,10 +5,12 @@
 // ================
 // ES5
 
-(function() {
+(function(undefined) {
     var defStorageName = "map-pos",
         defIsCenterZoom = true, // FALSE = positioning by NExSW points. TRUE = positioning by central point + zoom level.
         hashDelimiter = "&", // we preserve everything in hash line after the first occurance of this delimiter. Set it to FALSE to not use it.
+
+        storagePriorityMs = 5000, // milliseconds. // AK 11.12.2021: if page refreshed (by F5 for example), #hash in the address line not updating immediately. So coordinates in storage should have higher priority during N ms.
 
         isVisible = function(el) {
             return 0 < el.offsetWidth; // it's better than jQuery's selector is(":visible"). Invisible elements have 0 offsetWidth and offsetHeight.
@@ -42,6 +44,9 @@
                     }
                 }
 
+                // WARNING 11.12.2021: #hash updates not immediately. If browser window receives "beforeunload", the #hash updating to late to be actually updated before the page refresh.
+                // So we're setting up the kludge, timestamp of last occurance of "beforeunload", to use value in localStorage as priority.
+
                 history.replaceState(null, null, location.origin + location.pathname + location.search + "#" + hash);
             }
             // WARNING: On 13.02.2021 cursor flicker on replaceState(). Changes to default state for a moment. This is known bug described at https://bugs.chromium.org/p/chromium/issues/detail?id=1128213
@@ -61,7 +66,7 @@
                 // So let's cancel handling of the event in their handlers. We'll watch for _busyStraightBounds property.
                 // map.on("moveend", stopPrpagationEvent);
 
-                map._busyStraightBounds = true; // will help us to block odd "moveend"/"zoomend" events
+                map._busyStraightBounds = true; // MUTATION of map. will help us to block odd "moveend"/"zoomend" events
                 map.setBearing(0)
                     .setPitch(0);
             }
@@ -69,7 +74,7 @@
             if (isTilt) {
                 map.setBearing(saveBearing)
                     .setPitch(savePitch);
-                map._busyStraightBounds = false;
+                map._busyStraightBounds = false; // MUTATION of map.
             }
 
             return resultBounds;
@@ -87,7 +92,7 @@
                 var isLeaflet = needBounds,
                     getCoordVal = function(index, expectingLastChar) {
                         var r = 0;
-                        return (("undefined" !== typeof map[index]) &&
+                        return ((undefined !== map[index]) &&
                                 (expectingLastChar === map[index].charAt(map[index].length-1).toLowerCase()) &&
                                 (r = map[index].slice(0, -1)) &&
                                 !isNaN(r)) ? r : 0;
@@ -118,7 +123,7 @@
                     (!isNaN(map[1]) || (rslt = map[1].indexOf("x")))) {
 
                     // it's NE/SW (or NW/SE) coordinates?
-                    if (needBounds = !!rslt) {
+                    if (needBounds = 0 < rslt) { // -1 = not found. But we don't need 0 either.
                         rslt = map[1].split("x");
                         if (isNaN(rslt[0]) || isNaN(rslt[1]) || isNaN(map[2]))
                             return false; // invalid format
@@ -133,10 +138,10 @@
 
                         if (isLeaflet) {
                             rslt = {
-                                bounds: L.latLngBounds([ // latLng for Leaflet (BTW it's actually NW/SE)
+                                bounds: /*L.latLngBounds(*/[ // latLng for Leaflet (BTW it's actually NW/SE)
                                             [latNE, lngNE],
                                             [latSW, lngSW]
-                                        ]),
+                                        ],
                                 latNW: latNE,  // attention! NW/SE for Leaflet.
                                 lngNW: lngNE,
                                 latSE: latSW,
@@ -181,15 +186,23 @@
                     return false; // incorrect format
 
             }else { // map must be specified
-                var isLeaflet = "undefined" === typeof map.getPitch,
+                var isLeaflet = (undefined === map.getPitch),
                 // getting from map... "center" and "zoom" is universal for both Leaflet and MapBox.
-                    center = map.getCenter();
+                    center = map.getCenter(),
+                    zoom = map.getZoom(),
+                    lastView = map._lastViewport;
 
                 rslt = {
-                    zoom: map.getZoom(),
+                    zoom: zoom,
                     center: center, // L.latLng in Leaflet
                     lat: center.lat,
                     lng: center.lng,
+
+                    // isMoved = whether it was moved since previous call of the trackViewport()
+                    // This can be used in moveend/zoomend events to make sure whether the map was really moved.
+                    // Unfortunately moveend/zoomend in MapBox may be triggered just because the map container become visible on the page.
+                    // AND if map._lastViewport is not present, then map not moved. Then we just seeing restored state.
+                    isMoved: lastView && (center.lat !== lastView.lat || center.lng !== lastView.lng || zoom !== lastView.zoom),
                 };
 
                 if (needBounds) {
@@ -245,7 +258,7 @@
                                   // isCenterZoom:
                                 ? v.lat + "," + v.lng + "," + v.zoom + "z"
                                   // 2-points:
-                                : ("undefined" === typeof v.slatNE // it's Leaflet or MapBox?
+                                : (undefined === v.slatNE // it's Leaflet or MapBox?
                                     ? v.latNW + "," + v.lngNW + "x" + v.latSE + "," + v.lngSE // Leaflet use NW x SE
                                     : v.slatNE + "," + v.slngNE + "x" + v.slatSW + "," + v.slngSW // MapBox use NE x SW
                                   )) +
@@ -260,18 +273,32 @@
             if (!map._busyStraightBounds && // if not busy
                 isVisible(map.getContainer())) { // fortunately getContainer() works both for Leaflet and MapBox
 
-                if ("undefined" === typeof isCenterZoom)
+                if (undefined === isCenterZoom)
                     isCenterZoom = defIsCenterZoom;
 
                 var vi = getViewportInfo(map, isCenterZoom ? false : -1), // -1 = need straightBounds
                     vis = vi.toString(isCenterZoom);
 
-                updateHash(vis, noHashline);
+                if (vis !== map._lastVStr) { // update only if coordinates changed.
+                    updateHash(vis, noHashline);
 
-                if ("undefined" === typeof storageName || storageName)
-                    localStorage.setItem("string" === typeof storageName ? storageName : defStorageName, vis);
+                    if (undefined === storageName || storageName) { // if not FALSE/NULL/"".
+                        try {
+                            // AK 14.05.2021: we don't using any replacement for localStorage here. We trying to use localStorage, but doing nothing if it fails (eg on Brave browser).
+                            // AK 11.12.2021: adding timestamp at the end. So if page refreshed in less than N(5?) seconds, value in storage should have higher priority, because #hash in the address bar updating not immediately, or not updating on page refresh.
+                            localStorage.setItem(storageName || defStorageName, vis + "|" + new Date().getTime()); // + timestamp
+                        }catch(err) {
+                            // console.error("Can't write to localStorage."); // localStorage blocked by paranoiac browser, like Brave with default settings
+                        }
+                    }
 
-                return vi; // return viewPortInfo. Let the Viewport Info to be reused in the MapBox implementation.
+                    // MUTATIONS of map object.
+                    map._lastViewport = vi;
+                    map._lastVStr = vis;
+                }
+
+                // return viewPortInfo. Let the Viewport Info to be reused in the MapBox implementation.
+                return vi;
             }
         },
 
@@ -280,23 +307,34 @@
                 storageName: (string). Name of storage item to save current map position and restore it on refresh. Any non-string TRUE will use default storage item name, specified by defStorageName variable.
                 trackHashline: (boolean). If TRUE -- track current map position and zoom level (+ bearning & pitch in MapBox).
             */
-            var vi,
+            var vi, ts,
                 hashCoords = noHashline ? false : location.hash; // get from the browser address line
 
-            // try to recover from the address line
-            if (hashCoords && ("#" === hashCoords.charAt(0))) {
+            // checking localStorage first in either case, because for N seconds value in storage have higher prioerity. (Because #hash in the address line not refreshing on page refresh.)
+            try {
+                // AK 14.05.2021: we don't using any replacement for localStorage here. We trying to use localStorage, but doing nothing if it fails (eg on Brave browser).
+                if ((storageName = localStorage.getItem(storageName || defStorageName)) && // if we successfully received data from localStorage (and nothing blocked our request)
+                        (storageName = storageName.split("|"))) { // split coordinates and timestamp
+                    ts = parseInt(storageName[1]); // timestamp. Must be integer.
+                    storageName = storageName[0]; // coordinates
+                }
+
+            }catch(err) {
+                // console.error("Can't read from localStorage."); // localStorage blocked by paranoiac browser, like Brave with default settings
+            }
+
+            if ((!ts || (ts + storagePriorityMs < new Date().getTime())) && // ts must be integer.
+                    hashCoords && ("#" === hashCoords.charAt(0))) {
+
                 if (vi = getViewportInfo(hashCoords.substr(1), isLeaflet))
                     vi.restored = "hash";
 
-            }else if (!vi &&
-                    ("undefined" === typeof storageName || storageName) &&  // try to recover from localStorage
-                    (storageName = localStorage.getItem("string" === typeof storageName ? storageName : defStorageName))) {
-
+            }else if (storageName) {
                 if (vi = getViewportInfo(storageName, isLeaflet))
                     vi.restored = "storage";
 
                 // restore hashline, if it's used. At least trigger event.
-                if ("undefined" === typeof isCenterZoom)
+                if (undefined === isCenterZoom)
                     isCenterZoom = defIsCenterZoom;
 
                 if (vi)
@@ -307,8 +345,9 @@
         },
 
         latLngToStr = function(latLng) {
-            var lat = "undefined" === typeof latLng.lat ? latLng[0] : latLng.lat,
-                lng = "undefined" === typeof latLng.lng ? latLng[1] : latLng.lng;
+            var lat = latLng.lat || latLng[0],
+                lng = latLng.lng || latLng[1];
+
             return Math.abs(lat.toFixed(3)) + "°" + (lat > 0 ? "N" : "S") + " / " +
                    Math.abs(lng.toFixed(3)) + "°" + (lng > 0 ? "E" : "W");
         };
@@ -331,6 +370,8 @@
             },
 
             // WARNING: list of parameters DIFFERS from MapBox version!
+            // IMPORTANT!! Must be called only once per map object. Otherwise events will be hooked more than once.
+            // We don't checking whether events are hooked already, please just don't call restoreViewport() multiple times!
             restoreViewport: function(defCenter, defZoom, options) {
                 // Options are the same as in setView() with following additions:
                 //    storageName -- custom name of storage item to store current map position. Any TRUE but non-string value will use default storage item name, from "defStorageName" variable.
@@ -338,7 +379,7 @@
                 if (!options) options = {};
 
                 var map = this,
-                    isCenterZoom = ("undefined" === typeof options.isCenterZoom ? defIsCenterZoom : options.isCenterZoom),
+                    isCenterZoom = (undefined === options.isCenterZoom ? defIsCenterZoom : options.isCenterZoom),
                     vi = restoreViewport(false, isCenterZoom, options.storageName, options.noHashline, 1);
 
                 if (vi) {
@@ -351,14 +392,34 @@
                 }
 
                 if (options && (!options.noHashline || options.storageName)) {
-                    map.on("moveend zoomend", function() { // we checking whether map is currently visible inside...
-                        trackViewport(map, isCenterZoom, options.storageName, options.noHashline);
-                    });
+                    // IMPORTANT! We don't checking whether events are hooked already for this map object. Just don't call restoreViewport() multiple times per single map!
+                    var trackViewportChanges = function() {
+                            // we checking whether map is currently visible inside... If map is not visible, we don't updating viewport position.
+                            trackViewport(map, isCenterZoom, options.storageName, options.noHashline);
+                        };
+
+                    map.on("moveend", trackViewportChanges); // AK: no need to hook zoomend. One "moveend" perfectly serves to us.
+                    // AK: I reproduced situations when map still continue moving (with animation), but page is closing.
+                    window.addEventListener("beforeunload", trackViewportChanges);
                 }
 
-                return vi && vi.bounds
-                    ? map.fitBounds(vi.bounds)
-                    : map.setView(defCenter, defZoom, options); // L.Map.prototype.setView.call()
+                // Unfortunately we cannot set central point immediately when restoring bounding rectangle.
+                // fitBounds() take little bit longer time internally than regular setView().
+                // So the app should either:
+                //    * WAIT for the rending of initial bounds after calling the fitBounds before any automatic moving to some position, OR
+                //    * don't waste time to restore initial position with restoreViewport() in case if the viewport should be immediately switched to some other point.
+                //
+                if (vi && vi.bounds) {
+                    // invalid bounds may cause fatal exception, so let's try to set it. If it fails, we'll set default center/zoom.
+                    // Example of impossible coordinates: DOMAIN/#50.994743117903404,4.343719482421876x50.994743117903404,4.343719482421876
+                    // No need to try to parse errorneous bounds. Let's just set default if anything fails by any reason.
+                    try {
+                        return map.fitBounds(vi.bounds);
+                    }catch(e) {}
+                }
+
+                // defCenter / defZoom is restored point, if we restored it.
+                return map.setView(defCenter, defZoom, options); // L.Map.prototype.setView.call()
             },
 
             latLngToStr: function(latLng) {
@@ -390,6 +451,10 @@
         };
         // apply the viewportInfo (restored with restoreViewport function) into mapboxgl's map object.
         // Use only if viewport controlled by bounding rectangle! No need to use it if viewport controlled by central point + zoom.
+        //
+        // ALSO. Use applyViewport only when the map container's position are fully calculated. Otherwise, if it's display:none, coordinates can be not exactly the same when container become visible.
+        // We don't checking here whether map are visible. We just applying position. Control the map visibility outside. (And do not apply when it's invisible.)
+        // ...OR even better, initialize map only when container are visible.
         scope.applyViewport = function(map, vi) {
             if (vi.bounds) { // By default MapBox restore only central point + zoom. Let's fit the viewport to bounding rectangle instead.
                 map.fitBounds(vi.bounds, { animate: false });
